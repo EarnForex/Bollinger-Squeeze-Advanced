@@ -1,16 +1,17 @@
 //+-----------------------------------------------------------------------------+
 //|                                              Bollinger Squeeze Advanced.mq5 |
-//|                                             Copyright © 2022, EarnForex.com |
+//|                                             Copyright © 2023, EarnForex.com |
 //| https://www.earnforex.com/metatrader-indicators/Bollinger-Squeeze-Advanced/ |
 //+-----------------------------------------------------------------------------+
-#property copyright "Copyright © 2022, EarnForex.com"
+#property copyright "Copyright © 2023, EarnForex.com"
 #property link      "https://www.earnforex.com/metatrader-indicators/Bollinger-Squeeze-Advanced/"
-#property version   "1.00"
+#property version   "1.01"
 
 #property description "Advanced version of the Bollinger Squeeze with alerts."
 #property description "BB / Keltner channel squeeze is show with the wide blue bars."
 #property description "Trend strength and direction histogram can be based on one of the following indicators:"
 #property description "Stochastic, CCI, RSI, MACD, Momentum, Williams % Range, ADX, DeMarker."
+#property description "Supports multi-timeframe operation."
 
 #property indicator_separate_window
 #property indicator_buffers 5
@@ -53,6 +54,7 @@ double BB_Deviation = 2.0;
 int    KeltnerPeriod = 20;
 double KeltnerFactor = 1.5;
 
+input ENUM_TIMEFRAMES InpTimeframe = PERIOD_CURRENT; // Timeframe
 input enum_trigger_types TriggerType = DeMarker;
 input int StochasticPeriod = 14;
 input int CCIPeriod = 50;
@@ -66,6 +68,8 @@ input int ADXPeriod = 14;
 input int DeMarkerPeriod = 13;
 input bool AlertOnSidewaysTrending = false;
 input bool AlertOnZeroCross = false;
+input double AlertAboveLevel = 0; // AlertAboveLevel: If you want alerts above a non-zero level.
+input double AlertBelowLevel = 0; // AlertBelowLevel: If you want alerts below a non-zero level.
 input bool EnableNativeAlerts = false;
 input bool EnableEmailAlerts = false;
 input bool EnablePushAlerts = false;
@@ -84,12 +88,19 @@ double ATR_Buffer[];
 double StdDev_Buffer[];
 
 // Global variables:
-datetime LastAlertTimeSidewaysTrending = D'01.01.1970';
-int LastAlertDirectionSidewaysTrending = 0;
-datetime LastAlertTimeZeroCross = D'01.01.1970';
-int LastAlertDirectionZeroCross = 0;
 int MaxPeriod = 0;
 int Handle, ATR_Handle, StdDev_Handle;
+
+// MTF:
+ENUM_TIMEFRAMES Timeframe; // Timeframe of operation
+int deltaHighTF = 1; // Difference in candles count from the higher timeframe
+int PrevCalculated = 0;
+
+// Alerts:
+bool IsTrending;
+bool IsSideways;
+bool IsHistogramAboveZero;
+bool IsHistogramBelowZero;
 
 void OnInit()
 {
@@ -110,11 +121,18 @@ void OnInit()
     ArraySetAsSeries(MACD_MA, true);
     ArraySetAsSeries(HistoLine, true);
 
+    // Setting values for the higher timeframe:
+    Timeframe = InpTimeframe;
+    if (InpTimeframe < Period())
+    {
+        Timeframe = Period();
+    }
+
     switch (TriggerType)
     {
     case Stochastic:
         MaxPeriod = StochasticPeriod;
-        Handle = iStochastic(Symbol(), Period(), StochasticPeriod, 3, 3, MODE_SMA, STO_CLOSECLOSE);
+        Handle = iStochastic(Symbol(), Timeframe, StochasticPeriod, 3, 3, MODE_SMA, STO_CLOSECLOSE);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 30);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -30);
@@ -122,7 +140,7 @@ void OnInit()
         break;
     case CCI:
         MaxPeriod = CCIPeriod;
-        Handle = iCCI(Symbol(), Period(), CCIPeriod, PRICE_CLOSE);
+        Handle = iCCI(Symbol(), Timeframe, CCIPeriod, PRICE_CLOSE);
         IndicatorSetInteger(INDICATOR_LEVELS, 4);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, -200);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -100);
@@ -132,7 +150,7 @@ void OnInit()
         break;
     case RSI:
         MaxPeriod = RSIPeriod;
-        Handle = iRSI(Symbol(), Period(), RSIPeriod, PRICE_CLOSE);
+        Handle = iRSI(Symbol(), Timeframe, RSIPeriod, PRICE_CLOSE);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 20);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -20);
@@ -140,12 +158,12 @@ void OnInit()
         break;
     case MACD:
         MaxPeriod = (int)MathMax(MathMax(MACDFastEMAPeriod, MACDSlowEMAPeriod), MACDMACDEMAPeriod);
-        Handle = iMACD(Symbol(), Period(), 12, 26, 9, PRICE_CLOSE);
+        Handle = iMACD(Symbol(), Timeframe, 12, 26, 9, PRICE_CLOSE);
         IndicatorSetString(INDICATOR_SHORTNAME, "Bollinger Squeeze with MACD (" + IntegerToString(MACDFastEMAPeriod) + ", " + IntegerToString(MACDSlowEMAPeriod) + ", " + IntegerToString(MACDMACDEMAPeriod) + ", CLOSE)");
         break;
     case Momentum:
         MaxPeriod = MomentumPeriod;
-        Handle = iMomentum(Symbol(), Period(), MomentumPeriod, PRICE_CLOSE);
+        Handle = iMomentum(Symbol(), Timeframe, MomentumPeriod, PRICE_CLOSE);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 1);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -1);
@@ -153,7 +171,7 @@ void OnInit()
         break;
     case Williams:
         MaxPeriod = WilliamsPRPeriod;
-        Handle = iWPR(Symbol(), Period(), WilliamsPRPeriod);
+        Handle = iWPR(Symbol(), Timeframe, WilliamsPRPeriod);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 30);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -30);
@@ -161,7 +179,7 @@ void OnInit()
         break;
     case ADX:
         MaxPeriod = ADXPeriod;
-        Handle = iADX(Symbol(), Period(), ADXPeriod);
+        Handle = iADX(Symbol(), Timeframe, ADXPeriod);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 15);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, 40);
@@ -169,7 +187,7 @@ void OnInit()
         break;
     case DeMarker:
         MaxPeriod = DeMarkerPeriod;
-        Handle = iDeMarker(Symbol(), Period(), DeMarkerPeriod);
+        Handle = iDeMarker(Symbol(), Timeframe, DeMarkerPeriod);
         IndicatorSetInteger(INDICATOR_LEVELS, 2);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 0, 0.25);
         IndicatorSetDouble(INDICATOR_LEVELVALUE, 1, -0.25);
@@ -177,8 +195,8 @@ void OnInit()
         break;
     }
     
-    ATR_Handle = iATR(Symbol(), Period(), KeltnerPeriod);
-    StdDev_Handle = iStdDev(Symbol(), Period(), BB_Period, MODE_SMA, 0, PRICE_CLOSE);
+    ATR_Handle = iATR(Symbol(), Timeframe, KeltnerPeriod);
+    StdDev_Handle = iStdDev(Symbol(), Timeframe, BB_Period, MODE_SMA, 0, PRICE_CLOSE);
 
     ArraySetAsSeries(Buffer, true);
     ArraySetAsSeries(MACD_Signal_Buffer, true);
@@ -186,6 +204,13 @@ void OnInit()
     ArraySetAsSeries(StdDev_Buffer, true);
 
     MaxPeriod = MathMax(MathMax(MaxPeriod, KeltnerPeriod), BB_Period);
+
+    if (PeriodSeconds(Timeframe) > PeriodSeconds())
+    {
+        deltaHighTF = PeriodSeconds(Timeframe) / PeriodSeconds();
+    }
+
+    ResetGlobalVariables();
 }
 
 int OnCalculate(const int rates_total,
@@ -200,57 +225,81 @@ int OnCalculate(const int rates_total,
                 const int &spread[])
 {
     ArraySetAsSeries(Time, true);
-    
+
     int counted_bars = prev_calculated;
     if (counted_bars > 0) counted_bars--;
-    int limit = rates_total - counted_bars;
-    if (limit >= rates_total - MaxPeriod) limit = rates_total - MaxPeriod - 1;
 
-    if (CopyBuffer(Handle, 0, 0, limit, Buffer) != limit) return 0; // Data not ready yet.
+    PrevCalculated = prev_calculated;
+
+    static int upper_prev_counted = 0; // For MTF.
+    int upper_limit, calculated_start;
+    if (Timeframe != Period()) // MTF.
+    {
+        upper_limit = iBars(Symbol(), Timeframe) - upper_prev_counted + 1;
+        if (upper_limit >= iBars(Symbol(), Timeframe) - MaxPeriod) upper_limit = iBars(Symbol(), Timeframe) - MaxPeriod - 1;
+        if (upper_limit > rates_total - MaxPeriod) upper_limit = rates_total - MaxPeriod; // Buffers cannot hold more than the current period's bars worth of data!
+        calculated_start = iBarShift(_Symbol, PERIOD_CURRENT, iTime(Symbol(), Timeframe, upper_limit)); // Current timeframe's bar to start calculations.
+    }
+    else // Normal operation
+    {
+        int limit = rates_total - counted_bars;
+        if (limit >= rates_total - MaxPeriod) limit = rates_total - MaxPeriod - 1;
+        upper_limit = limit;
+        calculated_start = limit;
+    }
+    int copied_Buffer = CopyBuffer(Handle, 0, 0, upper_limit, Buffer);
+    if (copied_Buffer <= 0) return 0; // Data not ready yet.
+    int copied_MACD = 0;
     if (TriggerType == MACD)
     {
-        if (CopyBuffer(Handle, 1, 0, limit, MACD_Signal_Buffer) != limit) return 0; // Data not ready yet.
+        copied_MACD = CopyBuffer(Handle, 1, 0, upper_limit, MACD_Signal_Buffer);
+        if (copied_MACD <= 0) return 0; // Data not ready yet.
     }
-    if (CopyBuffer(ATR_Handle, 0, 0, limit, ATR_Buffer) != limit) return 0; // Data not ready yet.
-    if (CopyBuffer(StdDev_Handle, 0, 0, limit, StdDev_Buffer) != limit) return 0; // Data not ready yet.
-
-    for (int shift = limit - 1; shift >= 0; shift--)
+    int copied_ATR = CopyBuffer(ATR_Handle, 0, 0, upper_limit, ATR_Buffer);
+    if (copied_ATR <= 0) return 0; // Data not ready yet.
+    int copied_StdDev = CopyBuffer(StdDev_Handle, 0, 0, upper_limit, StdDev_Buffer);
+    if (copied_StdDev <= 0) return 0; // Data not ready yet.
+    for (int shift = calculated_start; shift >= 0; shift--)
     {
+        int index = iBarShift(_Symbol, Timeframe, Time[shift]);
+        if ((index >= copied_Buffer) || (index >= copied_ATR) || (index >= copied_StdDev)) continue; // Cannot go so far back in time.
+
         double d = 0;
         MACD_MA[shift] = 0;
         switch (TriggerType)
         {
         case Stochastic:
-            d = Buffer[shift] - 50;
+            d = Buffer[index] - 50;
             break;
         case CCI:
-            d = Buffer[shift];
+            d = Buffer[index];
             break;
         case RSI:
-            d = Buffer[shift] - 50;
+            d = Buffer[index] - 50;
             break;
         case MACD:
-            d = Buffer[shift];
-            MACD_MA[shift] = MACD_Signal_Buffer[shift];
+            d = Buffer[index];
+            if (index >= copied_MACD) continue;
+            MACD_MA[shift] = MACD_Signal_Buffer[index];
             break;
         case Momentum:
-            d = Buffer[shift] - 100;
+            d = Buffer[index] - 100;
             break;
         case Williams:
-            d = Buffer[shift] + 50;
+            d = Buffer[index] + 50;
             break;
         case ADX:
-            d = Buffer[shift];
+            d = Buffer[index];
             break;
         case DeMarker:
-            d = Buffer[shift] - 0.5;
+            d = Buffer[index] - 0.5;
             break;
         }
 
         HistoLine[shift] = d;
 
-        double diff = ATR_Buffer[shift] * KeltnerFactor;
-        double std = StdDev_Buffer[shift];
+        double diff = ATR_Buffer[index] * KeltnerFactor;
+        double std = StdDev_Buffer[index];
         double bbs = BB_Deviation * std / diff;
 
         if (bbs < 1)
@@ -283,68 +332,129 @@ int OnCalculate(const int rates_total,
         }
     }
 
-    if ((AlertOnSidewaysTrending) && (((TriggerCandle > 0) && (Time[0] > LastAlertTimeSidewaysTrending)) || (TriggerCandle == 0)))
-    {
-        string Text;
-        // Trending Alert
-        if ((HistoTrending[TriggerCandle] != 0) && (LastAlertDirectionSidewaysTrending != 1))
-        {
-            if (LastAlertDirectionSidewaysTrending != 0) // Skip actual alerts if it is the first run after attachment.
-            {
-                Text = "BSA: " + Symbol() + " - " + StringSubstr(EnumToString((ENUM_TIMEFRAMES)Period()), 7) + " - Trending.";
-                if (EnableNativeAlerts) Alert(Text);
-                if (EnableEmailAlerts) SendMail("BSA Alert", Text);
-                if (EnablePushAlerts) SendNotification(Text);
-            }
-            LastAlertTimeSidewaysTrending = Time[0];
-            LastAlertDirectionSidewaysTrending = 1;
-        }
-        // Sideways Alert
-        if ((HistoSideways[TriggerCandle] != 0) && (LastAlertDirectionSidewaysTrending != -1))
-        {
-            if (LastAlertDirectionSidewaysTrending != 0) // Skip actual alerts if it is the first run after attachment.
-            {
-                Text = "BSA: " + Symbol() + " - " + StringSubstr(EnumToString((ENUM_TIMEFRAMES)Period()), 7) + " - Sideways.";
-                if (EnableNativeAlerts) Alert(Text);
-                if (EnableEmailAlerts) SendMail("BB Squeeze Alert", Text);
-                if (EnablePushAlerts) SendNotification(Text);
-            }
-            LastAlertTimeSidewaysTrending = Time[0];
-            LastAlertDirectionSidewaysTrending = -1;
-        }
-    }
+    DoAlerts();
 
-    if ((AlertOnZeroCross) && (((TriggerCandle > 0) && (Time[0] > LastAlertTimeZeroCross)) || (TriggerCandle == 0)))
-    {
-        string Text;
-        // Zero Cross Alert
-        if ((HistoLine[TriggerCandle] > 0) && (LastAlertDirectionZeroCross != 1))
-        {
-            if (LastAlertDirectionZeroCross != 0) // Skip actual alerts if it is the first run after attachment.
-            {
-                Text = "BSA: " + Symbol() + " - " + StringSubstr(EnumToString((ENUM_TIMEFRAMES)Period()), 7) + " - Histogram Above Zero.";
-                if (EnableNativeAlerts) Alert(Text);
-                if (EnableEmailAlerts) SendMail("BSA Alert", Text);
-                if (EnablePushAlerts) SendNotification(Text);
-            }
-            LastAlertTimeZeroCross = Time[0];
-            LastAlertDirectionZeroCross = 1;
-        }
-        // Zero Cross Alert
-        if ((HistoLine[TriggerCandle] < 0) && (LastAlertDirectionZeroCross != -1))
-        {
-            if (LastAlertDirectionZeroCross != 0) // Skip actual alerts if it is the first run after attachment.
-            {
-                Text = "BSA: " + Symbol() + " - " + StringSubstr(EnumToString((ENUM_TIMEFRAMES)Period()), 7) + " - Histogram Below Zero.";
-                if (EnableNativeAlerts) Alert(Text);
-                if (EnableEmailAlerts) SendMail("BB Squeeze Alert", Text);
-                if (EnablePushAlerts) SendNotification(Text);
-            }
-            LastAlertTimeZeroCross = Time[0];
-            LastAlertDirectionZeroCross = -1;
-        }
-    }
+    upper_prev_counted = iBars(Symbol(), Timeframe);
 
     return rates_total;
+}
+
+void DoAlerts()
+{
+    if ((!EnableEmailAlerts) && (!EnableNativeAlerts) && (!EnablePushAlerts)) return;
+
+    if (!PrevCalculated)
+    {
+        RefreshGlobalVariables(); // Refresh global alert variables after attaching indicator.
+    }
+
+    string isTrendingMessage = NULL;
+    string isSidewaysMessage = NULL;
+    string isHistogramAboveZeroMessage = NULL;
+    string isHistogramBelowZeroMessage = NULL;
+
+    // Checking for alerts and saving info about it.
+    if ((AlertOnSidewaysTrending) &&
+            (!IsTrending) &&
+            (HasTrending()))
+    {
+        isTrendingMessage =  "Trending";
+        IsTrending = true;
+        IsSideways = false;
+    }
+
+    if ((AlertOnSidewaysTrending) &&
+            (!IsSideways) &&
+            (HasSideways()))
+    {
+        isSidewaysMessage = "Sideways";
+        IsSideways = true;
+        IsTrending = false;
+    }
+
+    if ((AlertOnZeroCross) &&
+            (!IsHistogramAboveZero) &&
+            (HasHistogramAboveZero()))
+    {
+        isHistogramAboveZeroMessage = "Histogram Above ";
+        if (AlertAboveLevel == 0) isHistogramAboveZeroMessage += "Zero.";
+        else isHistogramAboveZeroMessage += DoubleToString(AlertAboveLevel, 2) + ".";
+        IsHistogramAboveZero = true;
+        IsHistogramBelowZero = false;
+    }
+
+    if ((AlertOnZeroCross) &&
+            (!IsHistogramBelowZero) &&
+            (HasHistogramBelowZero()))
+    {
+        isHistogramBelowZeroMessage = "Histogram Below ";
+        if (AlertBelowLevel == 0) isHistogramBelowZeroMessage += "Zero.";
+        else isHistogramBelowZeroMessage += DoubleToString(AlertBelowLevel, 2) + ".";
+        IsHistogramBelowZero = true;
+        IsHistogramAboveZero = false;
+    }
+
+    IssueAlerts(isSidewaysMessage);
+    IssueAlerts(isTrendingMessage);
+    IssueAlerts(isHistogramAboveZeroMessage);
+    IssueAlerts(isHistogramBelowZeroMessage);
+}
+
+void ResetGlobalVariables()
+{
+    IsTrending = false;
+    IsSideways = false;
+    IsHistogramAboveZero = false;
+    IsHistogramBelowZero = false;
+}
+
+void RefreshGlobalVariables()
+{
+    IsTrending = HasTrending();
+    IsSideways = HasSideways();
+    IsHistogramAboveZero = HasHistogramAboveZero();
+    IsHistogramBelowZero = HasHistogramBelowZero();
+}
+
+void IssueAlerts(string message)
+{
+    if (message == NULL) return;
+
+    if (EnableNativeAlerts)
+    {
+        Alert(message);
+    }
+
+    message = "BSA: " + Symbol() + " - " + StringSubstr(EnumToString((ENUM_TIMEFRAMES)Timeframe), 7) + " - " + message + ".";
+
+    if (EnableEmailAlerts)
+    {
+        SendMail("BSA Alert", message);
+    }
+
+    if (EnablePushAlerts)
+    {
+        SendNotification(message);
+    }
+}
+
+bool HasTrending()
+{
+    return (HistoTrending[TriggerCandle * deltaHighTF] != 0);
+}
+
+bool HasSideways()
+{
+    return (HistoSideways[TriggerCandle * deltaHighTF] != 0);
+}
+
+bool HasHistogramAboveZero()
+{
+    return (HistoLine[TriggerCandle * deltaHighTF] > AlertAboveLevel);
+}
+
+bool HasHistogramBelowZero()
+{
+    return (HistoLine[TriggerCandle * deltaHighTF] < AlertBelowLevel);
 }
 //+------------------------------------------------------------------+
