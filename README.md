@@ -6,6 +6,6 @@ The presented version of Bollinger Squeeze Advanced provides two alert types: on
 
 ![Bollinger Squeeze Advanced indicator shows some potentially good trend-based entries on the hourly EUR/USD chart](https://github.com/EarnForex/Bollinger-Squeeze-Advanced/blob/main/README_Images/bollinger-squeeze-advanced-shows-trends-eurusd.png)
 
-More information about this custom MetaTrader indicator is available here: https://www.earnforex.com/metatrader-indicators/Bollinger-Squeeze-Advanced/
+More information about this custom MetaTrader indicator is available here: https://www.earnforex.com/indicators/Bollinger-Squeeze-Advanced/
 
 Any contributions to the code are welcome!
